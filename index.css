@@ -1,0 +1,855 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+
+const WORD_BANK = {
+  Animals: [
+    "Elephant",
+    "Penguin",
+    "Tiger",
+    "Dolphin",
+    "Giraffe",
+    "Octopus",
+    "Kangaroo",
+    "Panda",
+    "Shark",
+    "Owl",
+    "Rabbit",
+    "Crocodile",
+  ],
+  Food: [
+    "Pizza",
+    "Burger",
+    "Pasta",
+    "Ice Cream",
+    "Sushi",
+    "Taco",
+    "Banana",
+    "Chocolate",
+    "Sandwich",
+    "Cheese",
+    "Popcorn",
+    "Pancakes",
+  ],
+  Movies: [
+    "Titanic",
+    "Avatar",
+    "Jaws",
+    "Frozen",
+    "Shrek",
+    "Gladiator",
+    "Batman",
+    "Cars",
+    "Toy Story",
+    "Inception",
+    "Star Wars",
+    "Jurassic Park",
+  ],
+  Jobs: [
+    "Doctor",
+    "Teacher",
+    "Pilot",
+    "Firefighter",
+    "Builder",
+    "Chef",
+    "Photographer",
+    "Mechanic",
+    "Astronaut",
+    "Police Officer",
+    "Farmer",
+    "Plumber",
+  ],
+  Places: [
+    "Beach",
+    "Airport",
+    "Hospital",
+    "School",
+    "Castle",
+    "Cinema",
+    "Supermarket",
+    "Space Station",
+    "Zoo",
+    "Museum",
+    "Train Station",
+    "Football Stadium",
+  ],
+  Objects: [
+    "Phone",
+    "Laptop",
+    "Hammer",
+    "Toothbrush",
+    "Camera",
+    "Backpack",
+    "Umbrella",
+    "Telescope",
+    "Bicycle",
+    "Watch",
+    "Helmet",
+    "Torch",
+  ],
+};
+
+const STORAGE_KEY = "chameleon-party-state-v1";
+
+function sample(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function classNames(...parts) {
+  return parts.filter(Boolean).join(" ");
+}
+
+function getInitialPlayers() {
+  return ["Player 1", "Player 2", "Player 3", "Player 4"];
+}
+
+function buildNewRound(players, selectedCategories) {
+  const category = sample(selectedCategories);
+  const word = sample(WORD_BANK[category]);
+  const chameleonIndex = Math.floor(Math.random() * players.length);
+
+  return {
+    category,
+    word,
+    chameleonIndex,
+    revealIndex: 0,
+    cluesDone: [],
+    clueTurn: 0,
+    votes: {},
+    votingIndex: 0,
+    suspectIndex: null,
+    finalGuess: "",
+    outcome: null,
+  };
+}
+
+export default function ChameleonPartyApp() {
+  const [players, setPlayers] = useState(getInitialPlayers());
+  const [newPlayerName, setNewPlayerName] = useState("");
+  const [selectedCategories, setSelectedCategories] = useState(Object.keys(WORD_BANK).slice(0, 4));
+  const [roundTime, setRoundTime] = useState(45);
+  const [phase, setPhase] = useState("setup");
+  const [scores, setScores] = useState({});
+  const [roundNumber, setRoundNumber] = useState(1);
+  const [round, setRound] = useState(null);
+  const [showRole, setShowRole] = useState(false);
+  const [discussionTimer, setDiscussionTimer] = useState(roundTime);
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [showRules, setShowRules] = useState(false);
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    try {
+      const saved = JSON.parse(raw);
+      if (saved.players?.length) setPlayers(saved.players);
+      if (saved.selectedCategories?.length) setSelectedCategories(saved.selectedCategories);
+      if (typeof saved.roundTime === "number") setRoundTime(saved.roundTime);
+      if (saved.scores) setScores(saved.scores);
+      if (typeof saved.roundNumber === "number") setRoundNumber(saved.roundNumber);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ players, selectedCategories, roundTime, scores, roundNumber })
+    );
+  }, [players, selectedCategories, roundTime, scores, roundNumber]);
+
+  useEffect(() => {
+    setDiscussionTimer(roundTime);
+  }, [roundTime]);
+
+  useEffect(() => {
+    if (!timerRunning) return;
+    timerRef.current = setInterval(() => {
+      setDiscussionTimer((prev) => {
+        if (prev <= 1) {
+          clearInterval(timerRef.current);
+          setTimerRunning(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timerRef.current);
+  }, [timerRunning]);
+
+  const playerCountValid = players.length >= 3 && players.length <= 8;
+  const categoryCountValid = selectedCategories.length > 0;
+
+  const leaderboard = useMemo(
+    () => players.map((name) => ({ name, score: scores[name] || 0 })).sort((a, b) => b.score - a.score),
+    [players, scores]
+  );
+
+  function addPlayer() {
+    const trimmed = newPlayerName.trim();
+    if (!trimmed || players.length >= 8) return;
+    if (players.includes(trimmed)) {
+      setNewPlayerName("");
+      return;
+    }
+    setPlayers((prev) => [...prev, trimmed]);
+    setNewPlayerName("");
+  }
+
+  function updatePlayer(index, value) {
+    const next = [...players];
+    next[index] = value;
+    setPlayers(next);
+  }
+
+  function removePlayer(index) {
+    if (players.length <= 3) return;
+    const nameToRemove = players[index];
+    setPlayers((prev) => prev.filter((_, i) => i !== index));
+    setScores((prev) => {
+      const copy = { ...prev };
+      delete copy[nameToRemove];
+      return copy;
+    });
+  }
+
+  function toggleCategory(category) {
+    setSelectedCategories((prev) =>
+      prev.includes(category) ? prev.filter((c) => c !== category) : [...prev, category]
+    );
+  }
+
+  function startGame() {
+    if (!playerCountValid || !categoryCountValid) return;
+    const cleanPlayers = players.map((p, i) => p.trim() || `Player ${i + 1}`);
+    setPlayers(cleanPlayers);
+    setRound(buildNewRound(cleanPlayers, selectedCategories));
+    setShowRole(false);
+    setDiscussionTimer(roundTime);
+    setTimerRunning(false);
+    setPhase("reveal");
+  }
+
+  function nextReveal() {
+    if (!round) return;
+    if (round.revealIndex >= players.length - 1) {
+      setPhase("clues");
+      setShowRole(false);
+      return;
+    }
+    setRound((prev) => ({ ...prev, revealIndex: prev.revealIndex + 1 }));
+    setShowRole(false);
+  }
+
+  function completeClueTurn() {
+    if (!round) return;
+    const nextDone = [...round.cluesDone, round.clueTurn];
+    const lastTurn = round.clueTurn >= players.length - 1;
+
+    if (lastTurn) {
+      setRound((prev) => ({ ...prev, cluesDone: nextDone }));
+      setTimerRunning(false);
+      setDiscussionTimer(roundTime);
+      setPhase("discussion");
+      return;
+    }
+
+    setRound((prev) => ({
+      ...prev,
+      cluesDone: nextDone,
+      clueTurn: prev.clueTurn + 1,
+    }));
+  }
+
+  function castVote(targetIndex) {
+    if (!round) return;
+    const voterIndex = round.votingIndex;
+    const nextVotes = { ...round.votes, [voterIndex]: targetIndex };
+    const nextVotingIndex = voterIndex + 1;
+
+    if (nextVotingIndex >= players.length) {
+      const counts = {};
+      Object.values(nextVotes).forEach((vote) => {
+        counts[vote] = (counts[vote] || 0) + 1;
+      });
+      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      const top = sorted[0];
+      const tied = sorted.filter((entry) => entry[1] === top[1]).length > 1;
+      const suspectIndex = tied ? null : Number(top[0]);
+
+      setRound((prev) => ({ ...prev, votes: nextVotes, votingIndex: nextVotingIndex, suspectIndex }));
+
+      if (tied || suspectIndex !== round.chameleonIndex) {
+        finishRound({ type: "chameleon-escaped" });
+      } else {
+        setPhase("finalGuess");
+      }
+      return;
+    }
+
+    setRound((prev) => ({ ...prev, votes: nextVotes, votingIndex: nextVotingIndex }));
+  }
+
+  function finishRound(outcome) {
+    if (!round) return;
+    const updatedScores = { ...scores };
+
+    if (outcome.type === "players-win") {
+      players.forEach((name, index) => {
+        if (index !== round.chameleonIndex) {
+          updatedScores[name] = (updatedScores[name] || 0) + 1;
+        }
+      });
+    } else {
+      const chamName = players[round.chameleonIndex];
+      updatedScores[chamName] = (updatedScores[chamName] || 0) + 2;
+    }
+
+    setScores(updatedScores);
+    setRound((prev) => ({ ...prev, outcome }));
+    setPhase("result");
+  }
+
+  function submitFinalGuess() {
+    if (!round) return;
+    const guess = round.finalGuess.trim().toLowerCase();
+    const correct = guess === round.word.trim().toLowerCase();
+    finishRound(correct ? { type: "chameleon-guessed" } : { type: "players-win" });
+  }
+
+  function nextRound() {
+    setRoundNumber((prev) => prev + 1);
+    setRound(buildNewRound(players, selectedCategories));
+    setShowRole(false);
+    setDiscussionTimer(roundTime);
+    setTimerRunning(false);
+    setPhase("reveal");
+  }
+
+  function resetAll() {
+    setPhase("setup");
+    setRound(null);
+    setShowRole(false);
+    setDiscussionTimer(roundTime);
+    setTimerRunning(false);
+    setScores({});
+    setRoundNumber(1);
+  }
+
+  function TimerPill() {
+    return (
+      <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90">
+        <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
+        Discussion timer: <strong>{discussionTimer}s</strong>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-white">
+      <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-4 py-6 sm:px-6 lg:px-8">
+        <header className="mb-6 grid gap-4 rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900 via-slate-900 to-emerald-950/60 p-5 shadow-2xl md:grid-cols-[1.3fr_0.7fr]">
+          <div>
+            <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300">
+              Web prototype
+            </div>
+            <h1 className="text-3xl font-black tracking-tight sm:text-4xl">Chameleon Party</h1>
+            <p className="mt-2 max-w-2xl text-sm text-slate-300 sm:text-base">
+              A clean pass-and-play web app for phones, tablets, and desktops. Set up players, reveal roles in secret,
+              run the clue round, vote, and keep score across multiple rounds.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                onClick={() => setShowRules((prev) => !prev)}
+                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+              >
+                {showRules ? "Hide rules" : "Show rules"}
+              </button>
+              <button
+                onClick={resetAll}
+                className="rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-2 text-sm font-semibold text-rose-200 transition hover:bg-rose-400/20"
+              >
+                New session
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-3 rounded-3xl border border-white/10 bg-black/20 p-4">
+            <div>
+              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Round</div>
+              <div className="mt-1 text-3xl font-black">{roundNumber}</div>
+            </div>
+            <div>
+              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Mode</div>
+              <div className="mt-1 text-sm font-semibold text-slate-200">Single-device party play</div>
+            </div>
+            {round && phase !== "setup" ? (
+              <div>
+                <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Category</div>
+                <div className="mt-1 text-sm font-semibold text-slate-200">{round.category}</div>
+              </div>
+            ) : null}
+          </div>
+        </header>
+
+        {showRules ? (
+          <section className="mb-6 rounded-3xl border border-white/10 bg-slate-900/80 p-5 text-sm text-slate-200 shadow-xl">
+            <h2 className="text-lg font-bold text-white">How this version works</h2>
+            <p className="mt-2">
+              Everyone uses one device. Each player secretly reveals their role in turn. Normal players see the secret word.
+              The Chameleon only sees the category. After clues are spoken out loud, the group votes. If the Chameleon is caught,
+              they get one final guess at the word.
+            </p>
+            <p className="mt-2 text-slate-300">
+              Scoring in this build: players get <strong>1 point each</strong> if they catch the Chameleon and the final guess is
+              wrong. The Chameleon gets <strong>2 points</strong> if they escape or guess the word correctly.
+            </p>
+          </section>
+        ) : null}
+
+        <main className="grid flex-1 gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+          <section className="rounded-3xl border border-white/10 bg-slate-900/90 p-5 shadow-xl">
+            {phase === "setup" && (
+              <div className="space-y-6">
+                <div>
+                  <h2 className="text-2xl font-bold">Set up the game</h2>
+                  <p className="mt-1 text-sm text-slate-400">Add 3 to 8 players, choose categories, then start the round.</p>
+                </div>
+
+                <div className="grid gap-3">
+                  {players.map((player, index) => (
+                    <div key={index} className="grid grid-cols-[1fr_auto] gap-3">
+                      <input
+                        value={player}
+                        onChange={(e) => updatePlayer(index, e.target.value)}
+                        className="rounded-2xl border border-white/10 bg-slate-950 px-4 py-3 text-white outline-none ring-0 placeholder:text-slate-500 focus:border-emerald-400/50"
+                      />
+                      <button
+                        onClick={() => removePlayer(index)}
+                        disabled={players.length <= 3}
+                        className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                  <input
+                    value={newPlayerName}
+                    onChange={(e) => setNewPlayerName(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && addPlayer()}
+                    placeholder="Add another player"
+                    className="rounded-2xl border border-white/10 bg-slate-950 px-4 py-3 text-white outline-none placeholder:text-slate-500 focus:border-emerald-400/50"
+                  />
+                  <button
+                    onClick={addPlayer}
+                    disabled={players.length >= 8}
+                    className="rounded-2xl bg-emerald-500 px-5 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Add player
+                  </button>
+                </div>
+
+                <div>
+                  <h3 className="mb-3 text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">Categories</h3>
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    {Object.keys(WORD_BANK).map((category) => {
+                      const active = selectedCategories.includes(category);
+                      return (
+                        <button
+                          key={category}
+                          onClick={() => toggleCategory(category)}
+                          className={classNames(
+                            "rounded-2xl border px-4 py-4 text-left transition",
+                            active
+                              ? "border-emerald-400/40 bg-emerald-400/10 text-white"
+                              : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
+                          )}
+                        >
+                          <div className="font-semibold">{category}</div>
+                          <div className="mt-1 text-xs text-slate-400">{WORD_BANK[category].length} words</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-white/10 bg-slate-950 p-4">
+                    <label className="text-sm font-semibold text-slate-300">Discussion timer</label>
+                    <div className="mt-3 flex items-center gap-3">
+                      <input
+                        type="range"
+                        min="15"
+                        max="120"
+                        step="5"
+                        value={roundTime}
+                        onChange={(e) => setRoundTime(Number(e.target.value))}
+                        className="w-full"
+                      />
+                      <div className="min-w-14 rounded-xl bg-white/5 px-3 py-2 text-center text-sm font-bold">{roundTime}s</div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-slate-950 p-4">
+                    <div className="text-sm font-semibold text-slate-300">Ready check</div>
+                    <div className="mt-3 space-y-2 text-sm">
+                      <div className={playerCountValid ? "text-emerald-300" : "text-amber-300"}>
+                        {playerCountValid ? "✓ Player count is valid" : "Need between 3 and 8 players"}
+                      </div>
+                      <div className={categoryCountValid ? "text-emerald-300" : "text-amber-300"}>
+                        {categoryCountValid ? "✓ At least one category selected" : "Pick at least one category"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  onClick={startGame}
+                  disabled={!playerCountValid || !categoryCountValid}
+                  className="w-full rounded-2xl bg-emerald-500 px-5 py-4 text-base font-bold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Start round
+                </button>
+              </div>
+            )}
+
+            {phase === "reveal" && round && (
+              <div className="space-y-6 text-center">
+                <div>
+                  <div className="text-sm uppercase tracking-[0.2em] text-slate-400">Secret reveal</div>
+                  <h2 className="mt-2 text-3xl font-black">Pass the device to {players[round.revealIndex]}</h2>
+                  <p className="mt-2 text-slate-400">Make sure nobody else is looking.</p>
+                </div>
+
+                <div className="rounded-3xl border border-white/10 bg-slate-950 p-6 shadow-inner">
+                  {!showRole ? (
+                    <button
+                      onClick={() => setShowRole(true)}
+                      className="w-full rounded-2xl bg-emerald-500 px-5 py-4 text-lg font-bold text-slate-950 transition hover:bg-emerald-400"
+                    >
+                      Tap to reveal
+                    </button>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="text-sm uppercase tracking-[0.2em] text-slate-400">Category</div>
+                      <div className="text-2xl font-black text-white">{round.category}</div>
+
+                      {round.revealIndex === round.chameleonIndex ? (
+                        <>
+                          <div className="mt-4 inline-flex rounded-full border border-amber-400/20 bg-amber-400/10 px-4 py-2 text-sm font-semibold text-amber-200">
+                            You are the Chameleon
+                          </div>
+                          <p className="mx-auto mt-3 max-w-lg text-slate-300">
+                            You do not know the word. Blend in, give a believable clue, and avoid being caught.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <div className="mt-4 inline-flex rounded-full border border-emerald-400/20 bg-emerald-400/10 px-4 py-2 text-sm font-semibold text-emerald-200">
+                            You know the word
+                          </div>
+                          <div className="mt-3 text-4xl font-black tracking-tight text-emerald-300">{round.word}</div>
+                          <p className="mx-auto mt-3 max-w-lg text-slate-300">
+                            Give a clue that helps real players recognise each other without making the word too obvious.
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  onClick={nextReveal}
+                  disabled={!showRole}
+                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-5 py-4 font-bold text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {round.revealIndex >= players.length - 1 ? "Start clue round" : "Hide and pass on"}
+                </button>
+              </div>
+            )}
+
+            {phase === "clues" && round && (
+              <div className="space-y-6">
+                <div>
+                  <div className="text-sm uppercase tracking-[0.2em] text-slate-400">Clue round</div>
+                  <h2 className="mt-2 text-3xl font-black">{players[round.clueTurn]}'s turn</h2>
+                  <p className="mt-2 text-slate-400">
+                    Say one clue out loud. Don’t type it in. Keep the word hidden and the bluff alive.
+                  </p>
+                </div>
+
+                <div className="rounded-3xl border border-white/10 bg-slate-950 p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <TimerPill />
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => {
+                          setDiscussionTimer(roundTime);
+                          setTimerRunning(false);
+                        }}
+                        className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold hover:bg-white/10"
+                      >
+                        Reset timer
+                      </button>
+                      <button
+                        onClick={() => setTimerRunning((prev) => !prev)}
+                        className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-emerald-400"
+                      >
+                        {timerRunning ? "Pause" : "Start"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {players.map((player, index) => {
+                      const done = round.cluesDone.includes(index);
+                      const active = round.clueTurn === index;
+                      return (
+                        <div
+                          key={player}
+                          className={classNames(
+                            "rounded-2xl border p-4",
+                            done
+                              ? "border-emerald-400/20 bg-emerald-400/10"
+                              : active
+                              ? "border-amber-400/30 bg-amber-400/10"
+                              : "border-white/10 bg-white/5"
+                          )}
+                        >
+                          <div className="font-semibold text-white">{player}</div>
+                          <div className="mt-1 text-sm text-slate-400">
+                            {done ? "Clue given" : active ? "Up now" : "Waiting"}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <button
+                  onClick={completeClueTurn}
+                  className="w-full rounded-2xl bg-emerald-500 px-5 py-4 text-base font-bold text-slate-950 transition hover:bg-emerald-400"
+                >
+                  {round.clueTurn >= players.length - 1 ? "Move to discussion" : "Next player"}
+                </button>
+              </div>
+            )}
+
+            {phase === "discussion" && round && (
+              <div className="space-y-6">
+                <div>
+                  <div className="text-sm uppercase tracking-[0.2em] text-slate-400">Discussion</div>
+                  <h2 className="mt-2 text-3xl font-black">Talk it out, then vote</h2>
+                  <p className="mt-2 text-slate-400">
+                    Debate who sounds suspicious. When ready, start the voting phase and pass the phone around.
+                  </p>
+                </div>
+
+                <div className="rounded-3xl border border-white/10 bg-slate-950 p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <TimerPill />
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => {
+                          setDiscussionTimer(roundTime);
+                          setTimerRunning(false);
+                        }}
+                        className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold hover:bg-white/10"
+                      >
+                        Reset timer
+                      </button>
+                      <button
+                        onClick={() => setTimerRunning((prev) => !prev)}
+                        className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-emerald-400"
+                      >
+                        {timerRunning ? "Pause" : "Start"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                    {players.map((player, index) => (
+                      <div key={player} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                        <div className="font-semibold">{player}</div>
+                        <div className="mt-1 text-sm text-slate-400">Consider how their clue fit the category.</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    setTimerRunning(false);
+                    setDiscussionTimer(roundTime);
+                    setPhase("vote");
+                  }}
+                  className="w-full rounded-2xl bg-emerald-500 px-5 py-4 text-base font-bold text-slate-950 transition hover:bg-emerald-400"
+                >
+                  Start voting
+                </button>
+              </div>
+            )}
+
+            {phase === "vote" && round && (
+              <div className="space-y-6">
+                <div>
+                  <div className="text-sm uppercase tracking-[0.2em] text-slate-400">Vote</div>
+                  <h2 className="mt-2 text-3xl font-black">{players[round.votingIndex]}, choose your suspect</h2>
+                  <p className="mt-2 text-slate-400">Pass the device in private so each player can lock in one vote.</p>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {players.map((player, index) => (
+                    <button
+                      key={player}
+                      onClick={() => castVote(index)}
+                      className="rounded-2xl border border-white/10 bg-white/5 p-5 text-left transition hover:bg-white/10"
+                    >
+                      <div className="text-lg font-bold">{player}</div>
+                      <div className="mt-1 text-sm text-slate-400">Tap to vote for this player</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {phase === "finalGuess" && round && (
+              <div className="space-y-6 text-center">
+                <div>
+                  <div className="text-sm uppercase tracking-[0.2em] text-slate-400">Final guess</div>
+                  <h2 className="mt-2 text-3xl font-black">The Chameleon was caught</h2>
+                  <p className="mt-2 text-slate-400">
+                    Pass the device to <strong>{players[round.chameleonIndex]}</strong>. They now get one shot to guess the word.
+                  </p>
+                </div>
+
+                <div className="rounded-3xl border border-white/10 bg-slate-950 p-6">
+                  <input
+                    value={round.finalGuess}
+                    onChange={(e) => setRound((prev) => ({ ...prev, finalGuess: e.target.value }))}
+                    placeholder="Enter the Chameleon’s guess"
+                    className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-4 text-center text-lg text-white outline-none placeholder:text-slate-500 focus:border-emerald-400/50"
+                  />
+                </div>
+
+                <button
+                  onClick={submitFinalGuess}
+                  disabled={!round.finalGuess.trim()}
+                  className="w-full rounded-2xl bg-emerald-500 px-5 py-4 text-base font-bold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Reveal result
+                </button>
+              </div>
+            )}
+
+            {phase === "result" && round?.outcome && (
+              <div className="space-y-6">
+                <div>
+                  <div className="text-sm uppercase tracking-[0.2em] text-slate-400">Round result</div>
+                  <h2 className="mt-2 text-3xl font-black">
+                    {round.outcome.type === "players-win"
+                      ? "Players win"
+                      : round.outcome.type === "chameleon-guessed"
+                      ? "Chameleon guessed the word"
+                      : "Chameleon escaped"}
+                  </h2>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="rounded-3xl border border-white/10 bg-slate-950 p-5">
+                    <div className="text-sm uppercase tracking-[0.2em] text-slate-400">Secret word</div>
+                    <div className="mt-2 text-3xl font-black text-emerald-300">{round.word}</div>
+                    <div className="mt-4 text-sm text-slate-300">
+                      Chameleon: <strong>{players[round.chameleonIndex]}</strong>
+                    </div>
+                    {round.suspectIndex !== null ? (
+                      <div className="mt-2 text-sm text-slate-300">
+                        Group suspect: <strong>{players[round.suspectIndex]}</strong>
+                      </div>
+                    ) : (
+                      <div className="mt-2 text-sm text-slate-300">Group suspect: <strong>Tie vote</strong></div>
+                    )}
+                    {round.finalGuess ? (
+                      <div className="mt-2 text-sm text-slate-300">
+                        Final guess: <strong>{round.finalGuess}</strong>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="rounded-3xl border border-white/10 bg-slate-950 p-5">
+                    <div className="text-sm uppercase tracking-[0.2em] text-slate-400">Scoring applied</div>
+                    <p className="mt-2 text-slate-300">
+                      {round.outcome.type === "players-win"
+                        ? "Every non-Chameleon player gets 1 point."
+                        : "The Chameleon gets 2 points."}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <button
+                    onClick={nextRound}
+                    className="rounded-2xl bg-emerald-500 px-5 py-4 text-base font-bold text-slate-950 transition hover:bg-emerald-400"
+                  >
+                    Next round
+                  </button>
+                  <button
+                    onClick={() => setPhase("setup")}
+                    className="rounded-2xl border border-white/10 bg-white/5 px-5 py-4 text-base font-bold text-white transition hover:bg-white/10"
+                  >
+                    Back to setup
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+
+          <aside className="space-y-6">
+            <section className="rounded-3xl border border-white/10 bg-slate-900/90 p-5 shadow-xl">
+              <h2 className="text-xl font-bold">Leaderboard</h2>
+              <div className="mt-4 space-y-3">
+                {leaderboard.map((entry, index) => (
+                  <div key={entry.name} className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">#{index + 1}</div>
+                      <div className="font-semibold text-white">{entry.name}</div>
+                    </div>
+                    <div className="text-2xl font-black text-emerald-300">{entry.score}</div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="rounded-3xl border border-white/10 bg-slate-900/90 p-5 shadow-xl">
+              <h2 className="text-xl font-bold">Current settings</h2>
+              <div className="mt-4 grid gap-3 text-sm text-slate-300">
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Players</div>
+                  <div className="mt-1 font-semibold text-white">{players.length}</div>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Categories</div>
+                  <div className="mt-1 font-semibold text-white">{selectedCategories.join(", ") || "None"}</div>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Discussion timer</div>
+                  <div className="mt-1 font-semibold text-white">{roundTime} seconds</div>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-3xl border border-amber-400/20 bg-amber-400/10 p-5 shadow-xl">
+              <h2 className="text-xl font-bold text-amber-100">What this build does not do yet</h2>
+              <p className="mt-3 text-sm text-amber-50/90">
+                This is a proper playable web prototype, but it is still local-only. Real online rooms, phone-to-phone joining,
+                accounts, voice chat, moderation, and category packs from a backend would be the next stage.
+              </p>
+            </section>
+          </aside>
+        </main>
+      </div>
+    </div>
+  );
+}
